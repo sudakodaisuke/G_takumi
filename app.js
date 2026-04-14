@@ -15,10 +15,14 @@ const App = {
 const STORAGE_KEY    = 'g_quiz_history';
 const SESSION_KEY    = 'g_quiz_session';   // 途中保存
 const THEME_KEY      = 'g_quiz_theme';     // テーマ設定
+const WRONG_KEY      = 'g_quiz_wrong';     // 間違えた問題
 
 // ---- テーマ設定 ----
-const THEMES = ['light', 'dark', 'merhen'];
-const THEME_ICONS = { light: '☀️', dark: '🌙', merhen: '🌸' };
+const THEMES = ['light', 'dark', 'merhen', 'metal', 'gosurori', 'nikuman', 'scandinavian'];
+const THEME_ICONS = {
+  light: '☀️', dark: '🌙', merhen: '🌸',
+  metal: '⚡', gosurori: '🖤', nikuman: '🥟', scandinavian: '❄️'
+};
 
 function initTheme() {
   const saved = localStorage.getItem(THEME_KEY) || 'light';
@@ -37,7 +41,11 @@ function cycleTheme() {
   const idx = THEMES.indexOf(current);
   const next = THEMES[(idx + 1) % THEMES.length];
   applyTheme(next);
-  const names = { light: 'ライトモード', dark: 'ダークモード', merhen: 'メルヘンモード' };
+  const names = {
+    light: 'ライトモード', dark: 'ダークモード', merhen: 'メルヘンモード',
+    metal: 'メタルモード', gosurori: 'ゴスロリモード',
+    nikuman: '肉まんモード', scandinavian: 'スカンジナビアモード'
+  };
   showToast(names[next] + ' にしました');
 }
 
@@ -85,6 +93,34 @@ function saveSessionProgress() {
 
 function clearSessionProgress() {
   localStorage.removeItem(SESSION_KEY);
+}
+
+// ---- 間違えた問題管理 ----
+function loadWrongIds() {
+  try {
+    const raw = localStorage.getItem(WRONG_KEY);
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch { return new Set(); }
+}
+
+function saveWrongIds(ids) {
+  localStorage.setItem(WRONG_KEY, JSON.stringify([...ids]));
+}
+
+function updateWrongFromSession(answers) {
+  const ids = loadWrongIds();
+  answers.forEach(a => {
+    if (!a.correct) {
+      ids.add(a.question.id);
+    } else {
+      ids.delete(a.question.id); // 正解したら復習リストから除外
+    }
+  });
+  saveWrongIds(ids);
+}
+
+function clearWrongIds() {
+  localStorage.removeItem(WRONG_KEY);
 }
 
 function loadSavedSession() {
@@ -168,7 +204,8 @@ function showHome() {
   if (saved) {
     const savedDate = new Date(saved.savedAt);
     const dateStr = `${savedDate.getMonth()+1}/${savedDate.getDate()} ${savedDate.getHours()}:${String(savedDate.getMinutes()).padStart(2,'0')}`;
-    const modeLabel = saved.mode === 'exam' ? '模試' : '学習';
+    const modeLabels = { exam: '模試', study: '学習', wrong: '復習' };
+    const modeLabel = modeLabels[saved.mode] || '学習';
     const progress = `${saved.current}/${saved.questionIds.length}問`;
     const timeLeft = saved.remaining != null ? `（残り${Math.floor(saved.remaining/60)}分）` : '';
     resumeHtml = `
@@ -181,6 +218,9 @@ function showHome() {
         </div>
       </div>`;
   }
+
+  // 間違えた問題数
+  const wrongCount = loadWrongIds().size;
 
   render(`
     <div class="screen active">
@@ -209,10 +249,16 @@ function showHome() {
             <div class="mode-name">模試モード</div>
             <div class="mode-desc">150問 / 120分<br>全分野ランダム出題</div>
           </div>
+          ${wrongCount > 0 ? `
+          <div class="mode-card wrong-review-card" onclick="showWrongStudy()">
+            <div class="mode-icon">📌</div>
+            <div class="mode-name">復習モード</div>
+            <div class="mode-desc">間違えた問題のみ出題<br><span class="wrong-count-badge">${wrongCount}問 積み残し</span></div>
+          </div>` : ''}
           <div class="mode-card stats-card" onclick="showStats()">
             <div class="mode-icon">📊</div>
             <div class="mode-name">成績確認</div>
-            <div class="mode-desc">分野別正答率・過去の演習履歴を確認 (${totalSessions}回 / 模試${examSessions}回)</div>
+            <div class="mode-desc">分野別正答率・苦手分野グラフ (${totalSessions}回 / 模試${examSessions}回)</div>
           </div>
         </div>
         <div class="info-card">
@@ -246,6 +292,38 @@ function discardSession() {
   App.session = null;
   showHome();
   showToast('保存データを削除しました');
+}
+
+/* ---- 復習モード（間違えた問題のみ） ---- */
+function showWrongStudy() {
+  const wrongIds = loadWrongIds();
+  if (wrongIds.size === 0) {
+    showToast('間違えた問題はありません！');
+    return;
+  }
+
+  const allQ = App.data.chapters.flatMap(c => c.questions);
+  const wrongQuestions = allQ.filter(q => wrongIds.has(q.id));
+  if (wrongQuestions.length === 0) {
+    clearWrongIds();
+    showToast('問題データが一致しません。リストをリセットしました');
+    showHome();
+    return;
+  }
+
+  const questions = shuffle(wrongQuestions).slice(0, 50);
+  App.session = {
+    mode: 'wrong',
+    questions,
+    current: 0,
+    answers: [],
+    selectedChapters: [...new Set(questions.map(q => q.chapter_id))],
+    startTime: Date.now(),
+    remaining: null
+  };
+  clearSessionProgress();
+  enableQuizMode();
+  showQuestion();
 }
 
 /* ---- 学習モード設定 ---- */
@@ -538,7 +616,7 @@ function answerQuestion(letter) {
     if (l === letter && !isCorrect) btn.classList.add('incorrect');
   });
 
-  if (sess.mode === 'study') {
+  if (sess.mode === 'study' || sess.mode === 'wrong') {
     showExplanation(q, letter, isCorrect);
   } else {
     setTimeout(() => nextQuestion(), 400);
@@ -577,7 +655,8 @@ function nextQuestion() {
 
 /* ---- 中断（進捗を保存してホームへ） ---- */
 function confirmQuit() {
-  const modeLabel = App.session?.mode === 'exam' ? '模試' : '学習';
+  const modeLabels = { exam: '模試', wrong: '復習', study: '学習' };
+  const modeLabel = modeLabels[App.session?.mode] || '学習';
   if (confirm(`${modeLabel}を中断しますか？\n進捗は保存され、ホーム画面から再開できます。`)) {
     if (App.timerInterval) clearInterval(App.timerInterval);
     saveSessionProgress();
@@ -617,6 +696,9 @@ function finishSession() {
     elapsed: Math.floor((Date.now() - sess.startTime) / 1000)
   });
 
+  // 間違えた問題リストを更新（正解したものは除外、不正解は追加）
+  updateWrongFromSession(answers);
+
   // 完了したので途中保存を削除
   clearSessionProgress();
   App.session = null;
@@ -626,6 +708,7 @@ function finishSession() {
 
 /* ---- 結果画面 ---- */
 function showResult(totalQ, totalC, chapterResults, mode, answers) {
+  const modeLabels = { exam: '模試', wrong: '復習', study: '学習' };
   const pct = totalQ > 0 ? Math.round(totalC / totalQ * 100) : 0;
   const colorForPct = p => p >= 80 ? '#34a853' : p >= 60 ? '#f29900' : '#ea4335';
 
@@ -646,12 +729,15 @@ function showResult(totalQ, totalC, chapterResults, mode, answers) {
   }).join('');
 
   let wrongHtml = '';
-  if (mode === 'exam') {
+  if (mode === 'exam' || mode === 'wrong') {
     const wrong = answers.filter(a => !a.correct);
+    const remainingWrong = loadWrongIds().size;
     wrongHtml = `
       <div class="result-section">
         <h3>間違えた問題 (${wrong.length}問)</h3>
-        ${wrong.slice(0, 10).map(a => `
+        ${wrong.length === 0
+          ? '<div style="text-align:center;padding:20px;color:var(--success);font-weight:600;">全問正解！復習リストからも除外されました 🎉</div>'
+          : wrong.slice(0, 10).map(a => `
           <div class="wrong-item">
             <div class="q-text">${escHtml(a.question.text.slice(0,120))}${a.question.text.length>120?'…':''}</div>
             <div class="answer-row">
@@ -662,6 +748,7 @@ function showResult(totalQ, totalC, chapterResults, mode, answers) {
           </div>
         `).join('')}
         ${wrong.length > 10 ? `<div style="text-align:center;padding:10px;font-size:0.85rem;color:var(--text-secondary)">ほか${wrong.length-10}問</div>` : ''}
+        ${remainingWrong > 0 ? `<div style="font-size:0.82rem;color:var(--text-secondary);text-align:center;padding-top:8px;">復習リスト残り: ${remainingWrong}問</div>` : ''}
       </div>`;
   }
 
@@ -669,7 +756,7 @@ function showResult(totalQ, totalC, chapterResults, mode, answers) {
     <div class="screen active">
       <div class="result-hero">
         <div class="result-score">${pct}<small style="font-size:2.5rem">%</small></div>
-        <div class="result-score-label">${mode === 'exam' ? '模試' : '学習'}結果</div>
+        <div class="result-score-label">${modeLabels[mode] || '学習'}結果</div>
         <div class="result-fraction">${totalC} / ${totalQ} 問正解</div>
       </div>
       <div class="result-content">
@@ -684,17 +771,45 @@ function showResult(totalQ, totalC, chapterResults, mode, answers) {
     </div>
   `);
 
-  document.getElementById('retry-btn').onclick =
-    () => mode === 'exam' ? showExamSetup() : showStudySetup();
+  document.getElementById('retry-btn').onclick = () => {
+    if (mode === 'exam') showExamSetup();
+    else if (mode === 'wrong') showWrongStudy();
+    else showStudySetup();
+  };
 }
 
 /* ---- 成績確認画面 ---- */
 function showStats() {
   const history = loadHistory();
   const chapters = App.data.chapters;
+  const stats = history.chapter_stats;
+
+  // 苦手分野TOP3
+  const weakChapters = chapters.slice(0, 10)
+    .filter(ch => (stats[ch.id] || {}).total > 0)
+    .map(ch => {
+      const s = stats[ch.id];
+      return { ch, pct: Math.round(s.correct / s.total * 100), s };
+    })
+    .sort((a, b) => a.pct - b.pct)
+    .slice(0, 3);
+
+  const weakHtml = weakChapters.length === 0 ? '' : `
+    <div class="result-section">
+      <h3>⚠️ 苦手分野 TOP${weakChapters.length}</h3>
+      ${weakChapters.map((w, i) => `
+        <div class="weak-chapter-item">
+          <div>
+            <div class="weak-chapter-rank">${['🥇','🥈','🥉'][i]} 第${w.ch.id}章 ${w.ch.name}</div>
+            <div class="weak-chapter-sub">${w.s.correct}/${w.s.total}問正解</div>
+          </div>
+          <div class="weak-chapter-pct">${w.pct}%</div>
+        </div>
+      `).join('')}
+    </div>`;
 
   const statsRows = chapters.slice(0,10).map(ch => {
-    const s = history.chapter_stats[ch.id] || { total: 0, correct: 0 };
+    const s = stats[ch.id] || { total: 0, correct: 0 };
     if (s.total === 0) return `
       <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--bg);font-size:0.88rem;color:var(--text)">
         <span>第${ch.id}章 ${ch.name}</span>
@@ -714,17 +829,21 @@ function showStats() {
       </div>`;
   }).join('');
 
+  const badgeMap = { exam: 'badge-exam', wrong: 'badge-wrong', study: 'badge-study' };
+  const labelMap = { exam: '模試', wrong: '復習', study: '学習' };
   const sessionsHtml = history.sessions.length === 0
     ? '<div class="stats-empty">演習履歴はまだありません</div>'
     : history.sessions.slice().reverse().slice(0,20).map(sess => {
         const d = new Date(sess.date);
         const dateStr = `${d.getFullYear()}/${d.getMonth()+1}/${d.getDate()} ${d.getHours()}:${String(d.getMinutes()).padStart(2,'0')}`;
         const p = Math.round(sess.correct / sess.total * 100);
+        const badge = badgeMap[sess.mode] || 'badge-study';
+        const label = labelMap[sess.mode] || '学習';
         return `
           <div class="session-card">
             <div>
               <div class="session-mode">
-                <span class="badge ${sess.mode==='exam'?'badge-exam':'badge-study'}">${sess.mode==='exam'?'模試':'学習'}</span>
+                <span class="badge ${badge}">${label}</span>
                 　${sess.total}問
               </div>
               <div class="session-date">${dateStr}</div>
@@ -732,6 +851,8 @@ function showStats() {
             <div class="session-score">${p}%</div>
           </div>`;
       }).join('');
+
+  const wrongCount = loadWrongIds().size;
 
   render(`
     <div class="screen active">
@@ -741,9 +862,27 @@ function showStats() {
       </div>
       <div class="container">
         <div class="result-section">
+          <h3>分野別習熟度レーダー</h3>
+          <div class="radar-chart-container">
+            ${renderRadarChart(stats)}
+          </div>
+        </div>
+        ${weakHtml}
+        <div class="result-section">
           <h3>分野別累計正答率（全演習合計）</h3>
           ${statsRows || '<div style="color:var(--text-secondary);font-size:0.9rem;padding:12px 0;">まだ演習を行っていません</div>'}
         </div>
+        ${wrongCount > 0 ? `
+        <div class="result-section">
+          <h3>復習リスト</h3>
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <span style="font-size:0.9rem;color:var(--text)">積み残し問題: <strong style="color:var(--error)">${wrongCount}問</strong></span>
+            <button onclick="showWrongStudy()" style="background:var(--error);color:white;border:none;padding:8px 16px;border-radius:var(--radius-sm);cursor:pointer;font-size:0.88rem;font-weight:600;font-family:var(--font);">復習する</button>
+          </div>
+          <div style="margin-top:8px;">
+            <button onclick="if(confirm('復習リストをクリアしますか？')){clearWrongIds();showStats();showToast('復習リストをクリアしました');}" style="background:none;border:none;color:var(--text-secondary);font-size:0.8rem;cursor:pointer;padding:0;font-family:var(--font);">リストをクリア</button>
+          </div>
+        </div>` : ''}
         <div class="result-section">
           <h3>演習履歴</h3>
           ${sessionsHtml}
@@ -752,6 +891,72 @@ function showStats() {
       </div>
     </div>
   `);
+}
+
+/* ---- レーダーチャート（SVG） ---- */
+function renderRadarChart(stats) {
+  const chapters = App.data.chapters.slice(0, 10);
+  const n = chapters.length;
+  const cx = 150, cy = 155, r = 95;
+
+  const hasData = chapters.some(ch => (stats[ch.id] || {}).total > 0);
+  if (!hasData) {
+    return '<div class="chart-no-data">演習データがありません<br>学習・模試を行うとグラフが表示されます</div>';
+  }
+
+  // グリッド円
+  const gridCircles = [0.25, 0.5, 0.75, 1.0].map(ratio => {
+    const gr = r * ratio;
+    return `<circle cx="${cx}" cy="${cy}" r="${gr}" fill="none" stroke="currentColor" stroke-width="0.8" opacity="0.25"/>`;
+  }).join('');
+
+  // % ラベル
+  const gridLabels = [25, 50, 75, 100].map((pct, i) => {
+    const gr = r * (i + 1) / 4;
+    return `<text x="${cx + 3}" y="${cy - gr + 4}" font-size="7" fill="currentColor" opacity="0.45">${pct}%</text>`;
+  }).join('');
+
+  // 軸線 + 章ラベル
+  const axes = chapters.map((ch, i) => {
+    const angle = (i / n) * 2 * Math.PI - Math.PI / 2;
+    const x2 = cx + r * Math.cos(angle);
+    const y2 = cy + r * Math.sin(angle);
+    const lx = cx + (r + 20) * Math.cos(angle);
+    const ly = cy + (r + 20) * Math.sin(angle);
+    return `
+      <line x1="${cx}" y1="${cy}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="currentColor" stroke-width="0.8" opacity="0.3"/>
+      <text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" text-anchor="middle" dominant-baseline="middle" font-size="9" fill="currentColor" opacity="0.75">第${ch.id}章</text>`;
+  }).join('');
+
+  // データ点
+  const ratios = chapters.map(ch => {
+    const s = stats[ch.id] || { total: 0, correct: 0 };
+    return s.total > 0 ? s.correct / s.total : 0;
+  });
+
+  const points = chapters.map((ch, i) => {
+    const angle = (i / n) * 2 * Math.PI - Math.PI / 2;
+    const x = cx + r * ratios[i] * Math.cos(angle);
+    const y = cy + r * ratios[i] * Math.sin(angle);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+
+  const dots = chapters.map((ch, i) => {
+    if (ratios[i] === 0) return '';
+    const angle = (i / n) * 2 * Math.PI - Math.PI / 2;
+    const x = cx + r * ratios[i] * Math.cos(angle);
+    const y = cy + r * ratios[i] * Math.sin(angle);
+    return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.5" fill="var(--primary)" stroke="var(--surface)" stroke-width="1.5"/>`;
+  }).join('');
+
+  return `
+    <svg viewBox="0 0 300 310" style="width:100%;max-width:300px;display:block;margin:0 auto;color:var(--text-secondary);">
+      ${gridCircles}
+      ${gridLabels}
+      ${axes}
+      <polygon points="${points}" fill="var(--primary)" fill-opacity="0.2" stroke="var(--primary)" stroke-width="2" stroke-linejoin="round"/>
+      ${dots}
+    </svg>`;
 }
 
 function clearHistory() {
