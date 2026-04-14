@@ -4,17 +4,25 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>G検定 問題演習アプリ</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;500;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <div id="app">
-    <!-- 画面はapp.jsで動的に生成 -->
     <div id="loading" class="screen active">
       <div class="loading-box">
         <p>問題データを読み込み中...</p>
       </div>
     </div>
   </div>
+
+  <!-- 常時表示テーマ切り替えボタン -->
+  <button id="theme-btn" onclick="cycleTheme()" title="テーマ切り替え" aria-label="テーマ切り替え">☀️</button>
+
+  <!-- トースト通知 -->
+  <div id="toast" class="toast"></div>
+
   <script src="app.js"></script>
 </body>
 </html>
